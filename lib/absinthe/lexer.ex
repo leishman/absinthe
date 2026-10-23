@@ -234,8 +234,6 @@ defmodule Absinthe.Lexer do
           | {:error, binary(), {integer(), non_neg_integer()}}
           | {:error, :exceeded_token_limit}
   def tokenize(input, options \\ []) do
-    lines = String.split(input, ~r/\r?\n/)
-
     tokenize_opts = [context: %{token_limit: Keyword.get(options, :token_limit, :infinity)}]
 
     case do_tokenize(input, tokenize_opts) do
@@ -243,14 +241,31 @@ defmodule Absinthe.Lexer do
         {:error, :exceeded_token_limit}
 
       {:ok, tokens, "", _, _, _} ->
-        tokens = convert_token_columns_from_byte_to_char(tokens, lines)
-        {:ok, tokens}
+        # Token columns are byte offsets, which only differ from character
+        # offsets when a line contains multi-byte characters. Most documents
+        # are ASCII, so skip the (comparatively expensive) conversion for them.
+        if ascii?(input) do
+          {:ok, tokens}
+        else
+          {:ok, convert_token_columns_from_byte_to_char(tokens, split_lines(input))}
+        end
 
       {:ok, _, rest, _, {line, line_offset}, byte_offset} ->
         byte_column = byte_offset - line_offset + 1
-        {:error, rest, byte_loc_to_char_loc({line, byte_column}, lines)}
+        {:error, rest, byte_loc_to_char_loc({line, byte_column}, split_lines(input))}
     end
   end
+
+  defp split_lines(input), do: String.split(input, ~r/\r?\n/)
+
+  # Checks 7 bytes at a time (keeping the mask within a small integer), then
+  # falls back to single bytes.
+  defp ascii?(<<chunk::56, rest::binary>>) when Bitwise.band(chunk, 0x80808080808080) == 0,
+    do: ascii?(rest)
+
+  defp ascii?(<<byte, rest::binary>>) when byte < 0x80, do: ascii?(rest)
+  defp ascii?(<<>>), do: true
+  defp ascii?(_), do: false
 
   defp convert_token_columns_from_byte_to_char(tokens, [first_line | next_lines]) do
     initial_cursor_state = %{
