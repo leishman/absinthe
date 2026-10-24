@@ -95,6 +95,38 @@ defmodule Absinthe.LexerTest do
             ]} == Absinthe.Lexer.tokenize(@query)
   end
 
+  describe "ASCII documents" do
+    # Appending a comment with a multi-byte character forces the byte-to-char
+    # column conversion without adding tokens, so it can be compared with the
+    # ASCII fast path.
+    @ascii_documents [
+      "{ foo }",
+      "query Q($a: Int = 1, $b: [String!]! = [\"x\"]) {\n  foo(a: $a, b: $b) @skip(if: false)\n}",
+      "{\r\n\tfoo(s: \"tab\\tquote\\\"\", f: -1.5e3)\r\n  ...F\r}\r\nfragment F on T { bar }",
+      "  # comment\n\n\t\t{ a, b, c }  # trailing\n",
+      ~s|{ foo(s: """\n  block\n  string \\""" with "quotes"\n""") }|,
+      "{ a(u: \"\\u00e9\") }"
+    ]
+
+    test "produce the same tokens as the column conversion path" do
+      for doc <- @ascii_documents do
+        assert {:ok, tokens} = Absinthe.Lexer.tokenize(doc)
+        assert {:ok, ^tokens} = Absinthe.Lexer.tokenize(doc <> "\n# é")
+      end
+    end
+
+    test "report errors at the same location as the column conversion path" do
+      assert {:error, "~ bar }", {2, 7}} = Absinthe.Lexer.tokenize("{\n  foo ~ bar }")
+      assert {:error, _, {2, 7}} = Absinthe.Lexer.tokenize("{\n  foo ~ bar }\n# é")
+    end
+  end
+
+  test "columns count characters on lines with multi-byte characters" do
+    assert {:ok,
+            [{:"{", {1, 1}}, {:string_value, {1, 3}, _}, {:name, {1, 8}, ~c"b"}, {:"}", {1, 10}}]} =
+             Absinthe.Lexer.tokenize(~s|{ "é€" b }|)
+  end
+
   @tag timeout: 3_000
   test "long query doesn't take too long" do
     # This tests the performance of long queries. Before optimization work, this
